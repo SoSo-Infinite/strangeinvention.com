@@ -63,12 +63,30 @@ export default function Home() {
               commerce. Not a sterile catalog. Not a live store yet.
             </p>
             <p className="duo">
-              Hosts on the floor: <strong>Doc</strong> — chaotic professor /
-              mad-scientist energy, reverse-psychology “don’t touch that”
-              vibes — and <strong>Ooger</strong>, the companion sidekick
-              (exact bio still evolving). Names have shifted before; the duo
-              energy stays.
+              Hosts on the floor: <strong>Doc</strong> — aloof theatrical
+              mad-scientist curator; reverse psychology, dangerous experiments
+              as Tuesday — and <strong>Ooger</strong>, the sarcastic sidekick
+              who calls people “hoomans,” translates Doc’s science into plain
+              talk, and somehow keeps the warehouse from eating itself.
             </p>
+            <div className="pillars" style={{ marginTop: "1.5rem" }}>
+              <article className="card">
+                <h3>Doc</h3>
+                <p>
+                  Primary host. Confident, theatrical, slightly oblivious to
+                  the chaos he causes. Issues the commands. Does not usually
+                  say “hoomans.”
+                </p>
+              </article>
+              <article className="card">
+                <h3>Ooger</h3>
+                <p>
+                  Sidekick and plain-language translator. Comic disaster duty.
+                  Future checkout tip jar may be labeled Ooger’s Wage / Snack
+                  Fund — when commerce is real.
+                </p>
+              </article>
+            </div>
             <div className="btn-row">
               <a className="btn btn-primary" href="#waitlist">
                 Join the waitlist
