@@ -20,5 +20,9 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
     "typescript": "^5"
+  },
+  "overrides": {
+    "source-map-js": "^1.2.2",
+    "zod": "^4.6.6"
   }
 }
