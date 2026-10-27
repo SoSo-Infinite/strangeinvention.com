@@ -176,8 +176,7 @@ export default function Home() {
             <a href="mailto:cjames112@gmail.com">cjames112@gmail.com</a>
           </p>
           <p className="fineprint">
-            © {new Date().getFullYear()} Strange Invention. Built for Chad
-            Lenseth.
+            © {new Date().getFullYear()} Strange Invention.
           </p>
         </div>
       </footer>
