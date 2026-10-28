@@ -17,11 +17,11 @@ See [CONCEPT.md](./CONCEPT.md) for the unified idea (warehouse + edu-tainment + 
 
 Names only. Do not commit values.
 
-- `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID` (OIDC). The form does not claim a signup was saved unless one of these is set and the write succeeds. Use a private Blob store. The objects contain email addresses.
+- `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID` (OIDC). The form does not claim a signup was saved unless one of these is set and the private write succeeds. One object per email, under `signups/`, named with a hash. The object contains the email address.
 - `ALERT_WEBHOOK_URL` (optional HTTPS). Each saved signup POSTs `{ source, summary }`. The summary includes the email.
 - `ALERT_WEBHOOK_KEY` (optional). Sent as `Authorization: Bearer` when set.
 
-`TALK_ALERT_WEBHOOK_URL` and `TALK_ALERT_WEBHOOK_KEY` are fallbacks for that same webhook. If no webhook is set, a stored signup still succeeds.
+If no webhook is set, a stored signup still succeeds. Alert calls are capped at 60 per hour on each instance; signups past that cap are still stored.
 
 Public contact address: hello@strangeinvention.com.
 

@@ -9,12 +9,17 @@ export default function WaitlistForm() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
-  const started = useRef(0);
+  const ticket = useRef<string | null>(null);
 
   useEffect(() => {
-    started.current = Date.now();
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    fetch("/api/waitlist", { signal: ctrl.signal })
+      .then(async (res) => {
+        const data = (await res.json().catch(() => ({}))) as { ticket?: unknown };
+        if (typeof data.ticket === "string") ticket.current = data.ticket;
+      })
+      .catch(() => {});
     fetch("/api/events", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -49,7 +54,7 @@ export default function WaitlistForm() {
         body: JSON.stringify({
           email: submitted,
           company,
-          started: started.current,
+          ticket: ticket.current,
         }),
         signal: AbortSignal.timeout(20_000),
       });

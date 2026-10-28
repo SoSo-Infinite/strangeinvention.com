@@ -13,6 +13,7 @@ export const EVENT_NAMES = [
   "waitlist_alert_sent",
   "waitlist_alert_skipped",
   "waitlist_alert_failed",
+  "waitlist_alert_capped",
 ] as const;
 
 export type EventName = (typeof EVENT_NAMES)[number];

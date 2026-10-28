@@ -1,7 +1,7 @@
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { WAITLIST_COPY } from "./waitlist-copy";
 import {
   blobConfigured,
-  safeId,
   writeBlob,
   type Env,
   type PutBlob,
@@ -10,17 +10,22 @@ import { CLIENT_EVENTS, recordEvent, type EventCtx, type EventName, type LogFn }
 import { clientIp, createRateLimiter, type LimitDecision } from "./rate-limit";
 
 const MAX_BODY = 8 * 1024;
+const EVENT_BODY = 1024;
 export const MIN_FILL_MS = 1500;
-const SKEW_MS = 120_000;
+const TICKET_FUTURE_MS = 60_000;
+const TICKET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_LIMIT = 8;
 const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
 const EVENT_LIMIT = 30;
+export const ALERT_CAP = 60;
+const ALERT_WINDOW_MS = 60 * 60 * 1000;
 const ALERT_TIMEOUT_MS = 8000;
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const signupLimiter = createRateLimiter(SIGNUP_LIMIT, SIGNUP_WINDOW_MS);
 const eventLimiter = createRateLimiter(EVENT_LIMIT, SIGNUP_WINDOW_MS);
+const alertLimiter = createRateLimiter(ALERT_CAP, ALERT_WINDOW_MS);
 
 export type WaitlistDeps = {
   env?: Env;
@@ -30,12 +35,13 @@ export type WaitlistDeps = {
   putBlob?: PutBlob;
   allow?: (key: string, now: number) => LimitDecision;
   allowEvent?: (key: string, now: number) => LimitDecision;
+  allowAlert?: (key: string, now: number) => LimitDecision;
   log?: LogFn;
   /** Run side work after the signup object is durable. The route passes Next's after(). */
   defer?: (task: Promise<void>) => void;
 };
 
-type AlertResult = "sent" | "skipped" | "failed";
+type AlertResult = "sent" | "skipped" | "failed" | "capped";
 
 function json(status: number, body: Record<string, unknown>): Response {
   return Response.json(body, {
@@ -77,29 +83,85 @@ function honeypotFilled(value: unknown): boolean {
   return true;
 }
 
-function startedAt(value: unknown): number | null {
-  const n =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && value.trim() !== ""
-        ? Number(value)
-        : NaN;
-  // Reject 0 and other non-times so a missing client clock cannot skip the fill check.
-  if (!Number.isFinite(n) || n < 1_600_000_000_000 || n > 1e14) return null;
-  return n;
+function trimmed(value: string | undefined): string {
+  return value?.trim() || "";
 }
 
-function first(...values: Array<string | undefined>): string {
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (trimmed) return trimmed;
+/** Signing key for the fill-time ticket. The blob token is the secret; the store id covers OIDC-only projects. */
+export function ticketSecret(env: Env): string {
+  return trimmed(env.BLOB_READ_WRITE_TOKEN) || trimmed(env.BLOB_STORE_ID);
+}
+
+export function issueTicket(issuedAt: number, secret: string): string {
+  const body = String(issuedAt);
+  const sig = createHmac("sha256", secret).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+/** Server time from a ticket this process signed. A client-supplied clock is ignored. */
+export function ticketIssuedAt(ticket: unknown, secret: string): number | null {
+  if (!secret || typeof ticket !== "string" || ticket.length > 200) return null;
+  const dot = ticket.lastIndexOf(".");
+  if (dot <= 0) return null;
+  const body = ticket.slice(0, dot);
+  const got = Buffer.from(ticket.slice(dot + 1));
+  const want = Buffer.from(createHmac("sha256", secret).update(body).digest("base64url"));
+  if (got.length !== want.length || !timingSafeEqual(got, want)) return null;
+  const issued = Number(body);
+  if (!Number.isInteger(issued)) return null;
+  return issued;
+}
+
+export function signupPath(email: string): string {
+  const hash = createHash("sha256").update(email).digest("hex");
+  return `signups/${hash}.json`;
+}
+
+/** Read at most `max` bytes. A longer body is cancelled instead of buffered. */
+export async function readBody(
+  req: Request,
+  max: number,
+): Promise<{ ok: true; text: string } | { ok: false; reason: "large" | "read" }> {
+  const declared = Number(req.headers.get("content-length") || 0);
+  if (Number.isFinite(declared) && declared > max) return { ok: false, reason: "large" };
+
+  const stream = req.body;
+  if (!stream) {
+    try {
+      const text = await req.text();
+      if (text.length > max) return { ok: false, reason: "large" };
+      return { ok: true, text };
+    } catch {
+      return { ok: false, reason: "read" };
+    }
   }
-  return "";
+
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > max) {
+        await reader.cancel().catch(() => {});
+        return { ok: false, reason: "large" };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    return { ok: false, reason: "read" };
+  }
+  if (text.length > max) return { ok: false, reason: "large" };
+  return { ok: true, text };
 }
 
-/** URL plus optional bearer key. Accepts the shared alert names and the talk-alert names. */
+/** URL plus optional bearer key. Only ALERT_WEBHOOK_URL and ALERT_WEBHOOK_KEY are read. */
 export function alertConfig(env: Env): { state: "skipped" } | { state: "invalid" } | { state: "ready"; url: string; key: string } {
-  const urlRaw = first(env.ALERT_WEBHOOK_URL, env.TALK_ALERT_WEBHOOK_URL);
+  const urlRaw = trimmed(env.ALERT_WEBHOOK_URL);
   if (!urlRaw) return { state: "skipped" };
   let url: URL;
   try {
@@ -111,7 +173,7 @@ export function alertConfig(env: Env): { state: "skipped" } | { state: "invalid"
   return {
     state: "ready",
     url: url.toString(),
-    key: first(env.ALERT_WEBHOOK_KEY, env.TALK_ALERT_WEBHOOK_KEY),
+    key: trimmed(env.ALERT_WEBHOOK_KEY),
   };
 }
 
@@ -163,11 +225,20 @@ async function finish(task: Promise<void>, deps: WaitlistDeps, log: LogFn): Prom
   }
 }
 
-function tooFast(started: number | null, now: number): boolean {
-  if (started === null) return true;
-  const elapsed = now - started;
-  if (elapsed < -SKEW_MS) return true;
-  return elapsed >= 0 && elapsed < MIN_FILL_MS;
+function tooFast(issued: number | null, now: number): boolean {
+  if (issued === null) return true;
+  const elapsed = now - issued;
+  if (elapsed < -TICKET_FUTURE_MS || elapsed > TICKET_MAX_AGE_MS) return true;
+  return elapsed < MIN_FILL_MS;
+}
+
+export function handleTicket(req: Request, deps: WaitlistDeps = {}): Response {
+  const env = deps.env ?? process.env;
+  const now = (deps.now ?? Date.now)();
+  if (!sameOrigin(req)) return json(403, { ok: false, error: WAITLIST_COPY.origin });
+  const secret = ticketSecret(env);
+  if (!secret) return json(200, { ticket: null });
+  return json(200, { ticket: issueTicket(now, secret) });
 }
 
 /**
@@ -194,23 +265,15 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     return json(415, { ok: false, error: WAITLIST_COPY.badRequest });
   }
 
-  const declared = Number(req.headers.get("content-length") || 0);
-  if (Number.isFinite(declared) && declared > MAX_BODY) {
+  const read = await readBody(req, MAX_BODY);
+  if (!read.ok) {
     log({ event: "waitlist_invalid" });
-    return json(413, { ok: false, error: WAITLIST_COPY.large });
+    return json(read.reason === "large" ? 413 : 400, {
+      ok: false,
+      error: read.reason === "large" ? WAITLIST_COPY.large : WAITLIST_COPY.badRequest,
+    });
   }
-
-  let raw = "";
-  try {
-    raw = await req.text();
-  } catch {
-    log({ event: "waitlist_invalid" });
-    return json(400, { ok: false, error: WAITLIST_COPY.badRequest });
-  }
-  if (raw.length > MAX_BODY) {
-    log({ event: "waitlist_invalid" });
-    return json(413, { ok: false, error: WAITLIST_COPY.large });
-  }
+  const raw = read.text;
 
   const decision = allow(clientIp(req), now);
   if (!decision.ok) {
@@ -236,7 +299,8 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
   }
 
-  if (tooFast(startedAt(body.started), now)) {
+  const secret = ticketSecret(env);
+  if (secret && tooFast(ticketIssuedAt(body.ticket, secret), now)) {
     await finish(recordEvent("waitlist_too_fast", req, ctx), deps, log);
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
   }
@@ -252,7 +316,7 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     return json(503, { ok: false, error: WAITLIST_COPY.store });
   }
 
-  const pathname = `signups/${now}-${safeId(deps.random)}.json`;
+  const pathname = signupPath(email);
   const record = JSON.stringify({
     email,
     at: new Date(now).toISOString(),
@@ -260,23 +324,29 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   });
 
   try {
-    await writeBlob(pathname, record, env, deps.putBlob);
+    await writeBlob(pathname, record, env, deps.putBlob, { allowOverwrite: true });
   } catch {
     await finish(recordEvent("waitlist_store_failed", req, ctx), deps, log);
     return json(503, { ok: false, error: WAITLIST_COPY.store });
   }
 
+  const allowAlert = deps.allowAlert ?? ((key, at) => alertLimiter.allow(key, at));
   const task = (async () => {
-    const [, result] = await Promise.all([
-      recordEvent("waitlist_stored", req, ctx),
-      sendAlert(email, env, fetchImpl),
-    ]);
+    await recordEvent("waitlist_stored", req, ctx);
+    const config = alertConfig(env);
+    let result: AlertResult;
+    if (config.state === "skipped") result = "skipped";
+    else if (config.state === "invalid") result = "failed";
+    else if (!allowAlert("alerts", now).ok) result = "capped";
+    else result = await sendAlert(email, env, fetchImpl);
     const name: EventName =
       result === "sent"
         ? "waitlist_alert_sent"
         : result === "skipped"
           ? "waitlist_alert_skipped"
-          : "waitlist_alert_failed";
+          : result === "capped"
+            ? "waitlist_alert_capped"
+            : "waitlist_alert_failed";
     await recordEvent(name, req, ctx);
   })();
   await finish(task, deps, log);
@@ -284,29 +354,18 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
 }
 
 export async function handleClientEvent(req: Request, deps: WaitlistDeps = {}): Promise<Response> {
-  const env = deps.env ?? process.env;
   const nowFn = deps.now ?? Date.now;
   const log = deps.log ?? ((entry) => console.log(JSON.stringify(entry)));
   const allow = deps.allowEvent ?? ((key, now) => eventLimiter.allow(key, now));
-  const ctx = ctxFrom(deps, env, log, nowFn);
 
   if (!sameOrigin(req)) {
     log({ event: "waitlist_origin_rejected" });
     return json(403, { ok: false });
   }
 
-  const declared = Number(req.headers.get("content-length") || 0);
-  if (Number.isFinite(declared) && declared > 1024) {
-    return json(413, { ok: false });
-  }
-
-  let raw = "";
-  try {
-    raw = await req.text();
-  } catch {
-    return json(400, { ok: false });
-  }
-  if (raw.length > 1024) return json(413, { ok: false });
+  const read = await readBody(req, EVENT_BODY);
+  if (!read.ok) return json(read.reason === "large" ? 413 : 400, { ok: false });
+  const raw = read.text;
 
   const decision = allow(clientIp(req), nowFn());
   if (!decision.ok) {
@@ -328,6 +387,7 @@ export async function handleClientEvent(req: Request, deps: WaitlistDeps = {}): 
     return json(400, { ok: false });
   }
 
-  await recordEvent(name as EventName, req, ctx);
+  // Page-open counts stay in the function log. They are not written to Blob.
+  log({ event: name });
   return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
 }
