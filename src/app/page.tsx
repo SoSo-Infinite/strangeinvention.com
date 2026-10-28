@@ -1,4 +1,5 @@
 import WaitlistForm from "@/components/WaitlistForm";
+import { CONTACT_EMAIL } from "@/lib/waitlist-copy";
 
 function Mark({ size = 64 }: { size?: number }) {
   return (
@@ -173,7 +174,7 @@ export default function Home() {
             Fiction and entertainment frame the vibe; real commerce (including
             Portal Keys / drops) stays behind the waitlist until demand and
             readiness line up. Contact:{" "}
-            <a href="mailto:cjames112@gmail.com">cjames112@gmail.com</a>
+            <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
           </p>
           <p className="fineprint">
             © {new Date().getFullYear()} Strange Invention.

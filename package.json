@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --import tsx --test src/lib/waitlist.test.ts"
   },
   "dependencies": {
+    "@vercel/blob": "^2.8.2",
     "next": "16.4.1",
     "react": "19.2.9",
     "react-dom": "19.2.9"
@@ -19,6 +21,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   },
   "overrides": {

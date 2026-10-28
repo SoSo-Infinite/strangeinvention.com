@@ -349,8 +349,18 @@ img {
 }
 
 .waitlist-form {
+  position: relative;
   display: grid;
   gap: 0.75rem;
+}
+
+.hp {
+  position: absolute;
+  left: -10000px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
 }
 
 .waitlist-form label {
