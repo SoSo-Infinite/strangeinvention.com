@@ -2,19 +2,23 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { CONTACT_EMAIL, WAITLIST_COPY } from "@/lib/waitlist-copy";
+import { holdExpired, SUBMIT_WAIT_MS, type HeldTicket } from "@/lib/ticket-hold";
 
 type Status = "idle" | "loading" | "ok" | "err";
 
-const TICKET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-function ticketExpired(ticket: string | null, now = Date.now()): boolean {
-  if (!ticket) return true;
-  const dot = ticket.indexOf(".");
-  if (dot <= 0) return true;
-  const issued = Number(ticket.slice(0, dot));
-  if (!Number.isInteger(issued)) return true;
-  const age = now - issued;
-  return age < -60_000 || age > TICKET_MAX_AGE_MS;
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function fetchTicket(signal?: AbortSignal): Promise<string | null> {
@@ -28,14 +32,14 @@ export default function WaitlistForm() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [message, setMessage] = useState("");
-  const ticket = useRef<string | null>(null);
+  const held = useRef<HeldTicket | null>(null);
 
   useEffect(() => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
     fetchTicket(ctrl.signal)
       .then((value) => {
-        if (value) ticket.current = value;
+        if (value) held.current = { value, receivedAt: Date.now() };
       })
       .catch(() => {});
     fetch("/api/events", {
@@ -66,18 +70,23 @@ export default function WaitlistForm() {
     setMessage("");
 
     try {
-      if (ticketExpired(ticket.current)) {
-        ticket.current = await fetchTicket(AbortSignal.timeout(8_000));
+      const signal = AbortSignal.timeout(20_000);
+      let fetchedAtSubmit = false;
+      if (holdExpired(held.current, Date.now())) {
+        const value = await fetchTicket(signal);
+        held.current = value ? { value, receivedAt: Date.now() } : null;
+        fetchedAtSubmit = Boolean(value);
       }
+      if (fetchedAtSubmit) await sleep(SUBMIT_WAIT_MS, signal);
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           email: submitted,
           company,
-          ticket: ticket.current,
+          ticket: held.current?.value ?? null,
         }),
-        signal: AbortSignal.timeout(20_000),
+        signal,
       });
       const payload = (await res.json().catch(() => ({}))) as {
         error?: string;

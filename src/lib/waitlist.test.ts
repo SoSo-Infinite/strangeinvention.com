@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type PutBlob } from "./blob";
 import { createRateLimiter, limiterKey } from "./rate-limit";
+import { holdExpired, SUBMIT_WAIT_MS, TICKET_HOLD_MS } from "./ticket-hold";
 import { uaClass } from "./ua";
 import { WAITLIST_COPY } from "./waitlist-copy";
 import {
@@ -449,6 +450,12 @@ test("keeps one private object per email and caps alerts without dropping the si
     events(capped.writes).some((write) => write.pathname.includes("waitlist_alert_capped")),
     true,
   );
+  const marker = capped.writes.find((write) => write.pathname.startsWith("unalerted/"));
+  assert.equal(marker?.access, "private");
+  const marked = JSON.parse(marker?.body ?? "{}") as { reason?: string };
+  assert.equal(marked.reason, "capped");
+  assert.equal(marker?.body.includes("@"), false);
+  assert.equal(marker?.body.includes(STORED_EMAIL), false);
 });
 
 test("issues a ticket for a browser GET without Origin and stops reading past the body cap", async () => {
@@ -583,6 +590,46 @@ test("a headless browser can get a ticket without Origin and then join", async (
   const skipped = await handleWaitlist(request({ email: EMAIL, company: "" }), plain.deps);
   assert.equal(skipped.status, 200);
   assert.equal(signups(plain.writes)[0]?.pathname, signupPath(STORED_EMAIL, ""));
+});
+
+test("a client clock five minutes behind keeps a ticket it just received", async () => {
+  const skew = 5 * 60 * 1000;
+  const clientNow = NOW - skew;
+  const ticket = issueTicket(NOW - 5000, "ticket-secret");
+  const held = { value: ticket, receivedAt: clientNow };
+  assert.equal(holdExpired(held, clientNow), false);
+  assert.equal(holdExpired(held, clientNow + 2_000), false);
+  assert.equal(holdExpired(held, clientNow + TICKET_HOLD_MS), false);
+  assert.equal(holdExpired(held, clientNow + TICKET_HOLD_MS + 1), true);
+  // The ticket text contains a server time this clock thinks is in the future. That number is ignored.
+  assert.equal(holdExpired({ value: `${NOW}.server-time`, receivedAt: clientNow }, clientNow + 1_000), false);
+  assert.equal(SUBMIT_WAIT_MS > MIN_FILL_MS, true);
+
+  const { writes, deps } = harness();
+  const res = await handleWaitlist(request({ email: EMAIL, company: "", ticket: held.value }), deps);
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).ok, true);
+  assert.equal(signups(writes).length, 1);
+});
+
+test("please-wait responses do not fill the signup rate limit", async () => {
+  const limit = createRateLimiter(8, 60 * 60 * 1000);
+  let counted = 0;
+  const { deps } = harness({
+    allow(key, now) {
+      counted += 1;
+      return limit.allow(key, now);
+    },
+  });
+  for (let i = 0; i < 8; i += 1) {
+    const res = await handleWaitlist(request(signupBody({ issuedAt: NOW })), deps);
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).error, WAITLIST_COPY.wait);
+  }
+  assert.equal(counted, 0);
+  const ok = await handleWaitlist(request(signupBody()), deps);
+  assert.equal(ok.status, 200);
+  assert.equal(counted, 1);
 });
 
 test("retries one failed alert and then marks the signup unalerted", async () => {

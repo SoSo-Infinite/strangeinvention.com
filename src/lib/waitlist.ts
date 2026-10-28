@@ -306,13 +306,6 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   }
   const raw = read.text;
 
-  const decision = allow(limiterKey(req), now);
-  if (!decision.ok) {
-    log({ event: "waitlist_rate_limited" });
-    if (decision.justLimited) await finish(recordEvent("waitlist_rate_limited", req, ctx), deps, log);
-    return json(429, { ok: false, error: WAITLIST_COPY.rate });
-  }
-
   let body: Record<string, unknown>;
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -332,9 +325,17 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
 
   const secret = ticketSecret(env);
   // No ticket secret: do not block visitors, and do not sign with a blob credential.
+  // "Please wait" does not consume the rate limit, so a retry is not an hour lockout.
   if (secret && tooFast(ticketIssuedAt(body.ticket, secret), now)) {
     await finish(recordEvent("waitlist_too_fast", req, ctx), deps, log);
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
+  }
+
+  const decision = allow(limiterKey(req), now);
+  if (!decision.ok) {
+    log({ event: "waitlist_rate_limited" });
+    if (decision.justLimited) await finish(recordEvent("waitlist_rate_limited", req, ctx), deps, log);
+    return json(429, { ok: false, error: WAITLIST_COPY.rate });
   }
 
   const email = normalizeEmail(body.email);
@@ -372,12 +373,16 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   const task = (async () => {
     await recordEvent("waitlist_stored", req, ctx);
     const result = await deliverAlert(email, env, fetchImpl, allowAlert, now);
-    if (result === "failed") {
+    if (result === "failed" || result === "capped") {
       try {
         const marker = pathname.replace(/^signups\//, "unalerted/");
         await writeBlob(
           marker,
-          JSON.stringify({ at: new Date(now).toISOString(), path: pathname }),
+          JSON.stringify({
+            at: new Date(now).toISOString(),
+            path: pathname,
+            reason: result,
+          }),
           env,
           deps.putBlob,
           { allowOverwrite: true },
