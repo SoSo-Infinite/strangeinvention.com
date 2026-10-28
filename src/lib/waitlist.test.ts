@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type PutBlob } from "./blob";
-import { createRateLimiter } from "./rate-limit";
+import { createRateLimiter, limiterKey } from "./rate-limit";
 import { uaClass } from "./ua";
 import { WAITLIST_COPY } from "./waitlist-copy";
 import {
@@ -68,12 +68,16 @@ function harness(overrides: WaitlistDeps = {}) {
       return new Response("ok", { status: 200 });
     },
     ...overrides,
-    env: { BLOB_READ_WRITE_TOKEN: "test-token", ...overrides.env },
+    env: {
+      BLOB_READ_WRITE_TOKEN: "test-token",
+      WAITLIST_TICKET_SECRET: "ticket-secret",
+      ...overrides.env,
+    },
   };
   return { writes, logs, calls, deps };
 }
 
-function signupBody(extra: Record<string, unknown> = {}, secret = "test-token") {
+function signupBody(extra: Record<string, unknown> = {}, secret = "ticket-secret") {
   const issuedAt = typeof extra.issuedAt === "number" ? extra.issuedAt : NOW - 5000;
   const rest = { ...extra };
   delete rest.issuedAt;
@@ -111,14 +115,18 @@ test("stores the signup privately and skips the alert when no webhook is set", a
 
   const saved = signups(writes);
   assert.equal(saved.length, 1);
-  assert.equal(saved[0]?.pathname, signupPath(STORED_EMAIL));
+  assert.equal(saved[0]?.pathname, signupPath(STORED_EMAIL, "ticket-secret"));
   assert.equal(
+    saved[0]?.pathname,
+    `signups/${createHmac("sha256", "ticket-secret").update(STORED_EMAIL).digest("hex")}.json`,
+  );
+  assert.notEqual(
     saved[0]?.pathname,
     `signups/${createHash("sha256").update(STORED_EMAIL).digest("hex")}.json`,
   );
   assert.equal(saved[0]?.pathname.includes("@"), false);
   assert.equal(saved[0]?.access, "private");
-  assert.equal(saved[0]?.overwrite, true);
+  assert.equal(saved[0]?.overwrite, false);
   assert.equal(saved[0]?.token, "test-token");
   assert.deepEqual(JSON.parse(saved[0]?.body ?? ""), {
     email: STORED_EMAIL,
@@ -200,8 +208,13 @@ test("posts the alert after storage and still succeeds if the webhook fails", as
   const res = await handleWaitlist(request(signupBody()), deps);
   assert.equal(res.status, 200);
   assert.equal((await res.json()).ok, true);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(calls[0]?.url, "https://alerts.example/hook");
+  assert.equal(calls[1]?.url, "https://alerts.example/hook");
+  const marker = writes.find((write) => write.pathname.startsWith("unalerted/"));
+  assert.equal(Boolean(marker), true);
+  assert.equal(marker?.body.includes("@"), false);
+  assert.equal(marker?.overwrite, true);
   const init = calls[0]?.init ?? {};
   const headers = init.headers as Record<string, string>;
   assert.equal(headers.authorization, `Bearer ${KEY}`);
@@ -243,7 +256,7 @@ test("uses OIDC store id without a read-write token", async () => {
   const { writes, deps } = harness({
     env: { BLOB_READ_WRITE_TOKEN: "", BLOB_STORE_ID: "store_123" },
   });
-  const res = await handleWaitlist(request(signupBody({}, "store_123")), deps);
+  const res = await handleWaitlist(request(signupBody()), deps);
   assert.equal(res.status, 200);
   assert.equal(writes[0]?.token, undefined);
   assert.equal(writes[0]?.access, "private");
@@ -402,15 +415,27 @@ test("user-agent class never returns the raw string", () => {
 });
 
 test("keeps one private object per email and caps alerts without dropping the signup", async () => {
-  const { writes, deps } = harness();
+  const seen = new Set<string>();
+  const { writes, calls, deps } = harness({
+    env: { ALERT_WEBHOOK_URL: "https://alerts.example/hook", ALERT_WEBHOOK_KEY: KEY },
+    putBlob: async (pathname, body, access, token, options) => {
+      writes.push({ pathname, body, access, token, overwrite: options?.allowOverwrite });
+      if (!pathname.startsWith("signups/")) return;
+      if (seen.has(pathname)) throw new Error("The blob already exists");
+      seen.add(pathname);
+    },
+  });
   const first = await handleWaitlist(request(signupBody()), deps);
   const second = await handleWaitlist(request(signupBody()), deps);
   assert.equal(first.status, 200);
   assert.equal(second.status, 200);
+  assert.equal((await second.json()).ok, true);
   const saved = signups(writes);
   assert.equal(saved.length, 2);
   assert.equal(saved[0]?.pathname, saved[1]?.pathname);
-  assert.equal(saved.every((write) => write.access === "private" && write.overwrite === true), true);
+  assert.equal(saved.every((write) => write.access === "private" && write.overwrite === false), true);
+  assert.equal(calls.length, 1);
+  assert.equal(events(writes).some((write) => write.pathname.includes("waitlist_duplicate")), true);
 
   const capped = harness({
     env: { ALERT_WEBHOOK_URL: "https://alerts.example/hook", ALERT_WEBHOOK_KEY: KEY },
@@ -426,21 +451,35 @@ test("keeps one private object per email and caps alerts without dropping the si
   );
 });
 
-test("issues a same-origin ticket and stops reading past the body cap", async () => {
+test("issues a ticket for a browser GET without Origin and stops reading past the body cap", async () => {
   const req = new Request("https://strangeinvention.com/api/waitlist", {
-    headers: { origin: "https://strangeinvention.com", host: "strangeinvention.com" },
+    method: "GET",
+    headers: { host: "strangeinvention.com" },
   });
-  const res = handleTicket(req, { env: { BLOB_READ_WRITE_TOKEN: "test-token" }, now: () => NOW });
+  const res = handleTicket(req, { env: { WAITLIST_TICKET_SECRET: "ticket-secret" }, now: () => NOW });
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ticket: issueTicket(NOW, "test-token") });
+  assert.deepEqual(await res.json(), { ticket: issueTicket(NOW, "ticket-secret") });
 
-  const open = handleTicket(req, { env: {}, now: () => NOW });
+  const open = handleTicket(req, {
+    env: { BLOB_READ_WRITE_TOKEN: "blob-token", BLOB_STORE_ID: "store_123" },
+    now: () => NOW,
+  });
   assert.deepEqual(await open.json(), { ticket: null });
 
   const foreign = new Request("https://strangeinvention.com/api/waitlist", {
+    method: "GET",
     headers: { origin: "https://evil.example", host: "strangeinvention.com" },
   });
-  assert.equal(handleTicket(foreign, { env: { BLOB_READ_WRITE_TOKEN: "test-token" } }).status, 403);
+  assert.equal(
+    handleTicket(foreign, { env: { WAITLIST_TICKET_SECRET: "ticket-secret" } }).status,
+    403,
+  );
+
+  const cross = new Request("https://strangeinvention.com/api/waitlist", {
+    method: "GET",
+    headers: { host: "strangeinvention.com", "sec-fetch-site": "cross-site" },
+  });
+  assert.equal(handleTicket(cross, { env: { WAITLIST_TICKET_SECRET: "ticket-secret" } }).status, 403);
 
   let pulled = 0;
   const stream = new ReadableStream({
@@ -491,4 +530,77 @@ test("public source has no personal mailbox, old form host, or emoji", () => {
     assert.deepEqual(pictographs, [], file);
   }
   assert.equal(WAITLIST_COPY.success.startsWith("You're on the list."), true);
+  const form = readFileSync("src/components/WaitlistForm.tsx", "utf8");
+  assert.match(form, /method="post"/);
+});
+
+test("a headless browser can get a ticket without Origin and then join", async () => {
+  const browserGet = new Request("https://strangeinvention.com/api/waitlist", {
+    method: "GET",
+    headers: {
+      host: "strangeinvention.com",
+      accept: "*/*",
+      "sec-fetch-site": "same-origin",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+    },
+  });
+  const minted = handleTicket(browserGet, {
+    env: { WAITLIST_TICKET_SECRET: "ticket-secret", BLOB_READ_WRITE_TOKEN: "blob-token" },
+    now: () => NOW - 5000,
+  });
+  assert.equal(minted.status, 200);
+  const { ticket } = (await minted.json()) as { ticket: string };
+  assert.equal(ticket, issueTicket(NOW - 5000, "ticket-secret"));
+
+  let seenKey = "";
+  const { writes, deps } = harness({
+    allow(key) {
+      seenKey = key;
+      return { ok: true, justLimited: false };
+    },
+  });
+  const posted = await handleWaitlist(
+    request(
+      { email: EMAIL, company: "", ticket },
+      {
+        origin: "https://strangeinvention.com",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+      },
+    ),
+    deps,
+  );
+  assert.equal(posted.status, 200);
+  assert.equal((await posted.json()).ok, true);
+  assert.equal(signups(writes).length, 1);
+  assert.equal(seenKey, limiterKey(request({})));
+  assert.equal(seenKey.includes(IP), false);
+
+  const plain = harness({
+    env: { WAITLIST_TICKET_SECRET: "", BLOB_READ_WRITE_TOKEN: "blob-token", BLOB_STORE_ID: "store_abc" },
+  });
+  const skipped = await handleWaitlist(request({ email: EMAIL, company: "" }), plain.deps);
+  assert.equal(skipped.status, 200);
+  assert.equal(signups(plain.writes)[0]?.pathname, signupPath(STORED_EMAIL, ""));
+});
+
+test("retries one failed alert and then marks the signup unalerted", async () => {
+  let n = 0;
+  const recovered = harness({
+    env: { ALERT_WEBHOOK_URL: "https://alerts.example/hook", ALERT_WEBHOOK_KEY: KEY },
+    fetchImpl: async (url, init) => {
+      n += 1;
+      recovered.calls.push({ url: String(url), init: init ?? {} });
+      return new Response(n === 1 ? "no" : "ok", { status: n === 1 ? 500 : 200 });
+    },
+  });
+  const res = await handleWaitlist(request(signupBody()), recovered.deps);
+  assert.equal(res.status, 200);
+  assert.equal(recovered.calls.length, 2);
+  assert.equal(recovered.writes.some((write) => write.pathname.startsWith("unalerted/")), false);
+  assert.equal(
+    events(recovered.writes).some((write) => write.pathname.includes("waitlist_alert_sent")),
+    true,
+  );
 });

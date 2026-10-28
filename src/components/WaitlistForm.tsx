@@ -5,6 +5,25 @@ import { CONTACT_EMAIL, WAITLIST_COPY } from "@/lib/waitlist-copy";
 
 type Status = "idle" | "loading" | "ok" | "err";
 
+const TICKET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function ticketExpired(ticket: string | null, now = Date.now()): boolean {
+  if (!ticket) return true;
+  const dot = ticket.indexOf(".");
+  if (dot <= 0) return true;
+  const issued = Number(ticket.slice(0, dot));
+  if (!Number.isInteger(issued)) return true;
+  const age = now - issued;
+  return age < -60_000 || age > TICKET_MAX_AGE_MS;
+}
+
+async function fetchTicket(signal?: AbortSignal): Promise<string | null> {
+  const res = await fetch("/api/waitlist", { method: "GET", cache: "no-store", signal });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => ({}))) as { ticket?: unknown };
+  return typeof data.ticket === "string" ? data.ticket : null;
+}
+
 export default function WaitlistForm() {
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<Status>("idle");
@@ -14,10 +33,9 @@ export default function WaitlistForm() {
   useEffect(() => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
-    fetch("/api/waitlist", { signal: ctrl.signal })
-      .then(async (res) => {
-        const data = (await res.json().catch(() => ({}))) as { ticket?: unknown };
-        if (typeof data.ticket === "string") ticket.current = data.ticket;
+    fetchTicket(ctrl.signal)
+      .then((value) => {
+        if (value) ticket.current = value;
       })
       .catch(() => {});
     fetch("/api/events", {
@@ -48,6 +66,9 @@ export default function WaitlistForm() {
     setMessage("");
 
     try {
+      if (ticketExpired(ticket.current)) {
+        ticket.current = await fetchTicket(AbortSignal.timeout(8_000));
+      }
       const res = await fetch("/api/waitlist", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -84,7 +105,13 @@ export default function WaitlistForm() {
   }
 
   return (
-    <form className="waitlist-form" onSubmit={onSubmit} noValidate aria-busy={status === "loading"}>
+    <form
+      className="waitlist-form"
+      method="post"
+      onSubmit={onSubmit}
+      noValidate
+      aria-busy={status === "loading"}
+    >
       <div className="hp" aria-hidden="true">
         <label htmlFor="company">Company</label>
         <input

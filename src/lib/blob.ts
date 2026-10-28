@@ -44,13 +44,25 @@ async function defaultPut(
   });
 }
 
-/** Private blobs only. A store that rejects private access fails the write. */
+export function blobAlreadyExists(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const name = err instanceof Error ? err.name.toLowerCase() : "";
+  return name.includes("alreadyexists") || /already exists/.test(message);
+}
+
+/** Private blobs only. An existing object is reported and left in place. */
 export async function writeBlob(
   pathname: string,
   body: string,
   env: Env,
   putBlob: PutBlob = defaultPut,
   options?: { allowOverwrite?: boolean },
-): Promise<void> {
-  await putBlob(pathname, body, "private", blobToken(env), options);
+): Promise<"stored" | "exists"> {
+  try {
+    await putBlob(pathname, body, "private", blobToken(env), options);
+    return "stored";
+  } catch (err) {
+    if (options?.allowOverwrite !== true && blobAlreadyExists(err)) return "exists";
+    throw err;
+  }
 }

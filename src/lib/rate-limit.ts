@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type LimitDecision = { ok: boolean; justLimited: boolean };
 
 /**
@@ -35,4 +37,9 @@ export function clientIp(req: Request): string {
   const real = req.headers.get("x-real-ip")?.trim();
   if (real) return real.slice(0, 80);
   return "unknown";
+}
+
+/** Stable limiter bucket. The address itself is not the key and is not stored. */
+export function limiterKey(req: Request): string {
+  return createHash("sha256").update(clientIp(req)).digest("hex");
 }

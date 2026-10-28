@@ -7,7 +7,7 @@ import {
   type PutBlob,
 } from "./blob";
 import { CLIENT_EVENTS, recordEvent, type EventCtx, type EventName, type LogFn } from "./events";
-import { clientIp, createRateLimiter, type LimitDecision } from "./rate-limit";
+import { createRateLimiter, limiterKey, type LimitDecision } from "./rate-limit";
 
 const MAX_BODY = 8 * 1024;
 const EVENT_BODY = 1024;
@@ -87,9 +87,9 @@ function trimmed(value: string | undefined): string {
   return value?.trim() || "";
 }
 
-/** Signing key for the fill-time ticket. The blob token is the secret; the store id covers OIDC-only projects. */
+/** Fill-time and path secret. Blob credentials are never used to sign. */
 export function ticketSecret(env: Env): string {
-  return trimmed(env.BLOB_READ_WRITE_TOKEN) || trimmed(env.BLOB_STORE_ID);
+  return trimmed(env.WAITLIST_TICKET_SECRET);
 }
 
 export function issueTicket(issuedAt: number, secret: string): string {
@@ -112,9 +112,12 @@ export function ticketIssuedAt(ticket: unknown, secret: string): number | null {
   return issued;
 }
 
-export function signupPath(email: string): string {
-  const hash = createHash("sha256").update(email).digest("hex");
-  return `signups/${hash}.json`;
+/** HMAC when the ticket secret is set, so the path is not a raw hash of the address. */
+export function signupPath(email: string, secret = ""): string {
+  const digest = secret
+    ? createHmac("sha256", secret).update(email).digest("hex")
+    : createHash("sha256").update(email).digest("hex");
+  return `signups/${digest}.json`;
 }
 
 /** Read at most `max` bytes. A longer body is cancelled instead of buffered. */
@@ -177,6 +180,22 @@ export function alertConfig(env: Env): { state: "skipped" } | { state: "invalid"
   };
 }
 
+async function deliverAlert(
+  email: string,
+  env: Env,
+  fetchImpl: typeof fetch,
+  allowAlert: (key: string, now: number) => LimitDecision,
+  now: number,
+): Promise<AlertResult> {
+  const config = alertConfig(env);
+  if (config.state === "skipped") return "skipped";
+  if (config.state === "invalid") return "failed";
+  if (!allowAlert("alerts", now).ok) return "capped";
+  const first = await sendAlert(email, env, fetchImpl);
+  if (first !== "failed") return first;
+  return sendAlert(email, env, fetchImpl);
+}
+
 export async function sendAlert(email: string, env: Env, fetchImpl: typeof fetch): Promise<AlertResult> {
   const config = alertConfig(env);
   if (config.state === "skipped") return "skipped";
@@ -232,10 +251,22 @@ function tooFast(issued: number | null, now: number): boolean {
   return elapsed < MIN_FILL_MS;
 }
 
+/**
+ * Browsers omit Origin on same-origin GETs. A missing Origin is allowed.
+ * Sec-Fetch-Site: same-origin is allowed. A cross-site fetch or a mismatched Origin is not.
+ */
+export function ticketGetAllowed(req: Request): boolean {
+  const site = (req.headers.get("sec-fetch-site") || "").toLowerCase();
+  if (site === "cross-site" || site === "cross-origin") return false;
+  const origin = req.headers.get("origin");
+  if (!origin) return true;
+  return sameOrigin(req);
+}
+
 export function handleTicket(req: Request, deps: WaitlistDeps = {}): Response {
   const env = deps.env ?? process.env;
   const now = (deps.now ?? Date.now)();
-  if (!sameOrigin(req)) return json(403, { ok: false, error: WAITLIST_COPY.origin });
+  if (!ticketGetAllowed(req)) return json(403, { ok: false, error: WAITLIST_COPY.origin });
   const secret = ticketSecret(env);
   if (!secret) return json(200, { ticket: null });
   return json(200, { ticket: issueTicket(now, secret) });
@@ -275,7 +306,7 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   }
   const raw = read.text;
 
-  const decision = allow(clientIp(req), now);
+  const decision = allow(limiterKey(req), now);
   if (!decision.ok) {
     log({ event: "waitlist_rate_limited" });
     if (decision.justLimited) await finish(recordEvent("waitlist_rate_limited", req, ctx), deps, log);
@@ -300,6 +331,7 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   }
 
   const secret = ticketSecret(env);
+  // No ticket secret: do not block visitors, and do not sign with a blob credential.
   if (secret && tooFast(ticketIssuedAt(body.ticket, secret), now)) {
     await finish(recordEvent("waitlist_too_fast", req, ctx), deps, log);
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
@@ -316,29 +348,44 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     return json(503, { ok: false, error: WAITLIST_COPY.store });
   }
 
-  const pathname = signupPath(email);
+  const pathname = signupPath(email, secret);
   const record = JSON.stringify({
     email,
     at: new Date(now).toISOString(),
     source: "strangeinvention.com",
   });
 
+  let outcome: "stored" | "exists";
   try {
-    await writeBlob(pathname, record, env, deps.putBlob, { allowOverwrite: true });
+    outcome = await writeBlob(pathname, record, env, deps.putBlob, { allowOverwrite: false });
   } catch {
     await finish(recordEvent("waitlist_store_failed", req, ctx), deps, log);
     return json(503, { ok: false, error: WAITLIST_COPY.store });
   }
 
+  if (outcome === "exists") {
+    await finish(recordEvent("waitlist_duplicate", req, ctx), deps, log);
+    return json(200, { ok: true });
+  }
+
   const allowAlert = deps.allowAlert ?? ((key, at) => alertLimiter.allow(key, at));
   const task = (async () => {
     await recordEvent("waitlist_stored", req, ctx);
-    const config = alertConfig(env);
-    let result: AlertResult;
-    if (config.state === "skipped") result = "skipped";
-    else if (config.state === "invalid") result = "failed";
-    else if (!allowAlert("alerts", now).ok) result = "capped";
-    else result = await sendAlert(email, env, fetchImpl);
+    const result = await deliverAlert(email, env, fetchImpl, allowAlert, now);
+    if (result === "failed") {
+      try {
+        const marker = pathname.replace(/^signups\//, "unalerted/");
+        await writeBlob(
+          marker,
+          JSON.stringify({ at: new Date(now).toISOString(), path: pathname }),
+          env,
+          deps.putBlob,
+          { allowOverwrite: true },
+        );
+      } catch {
+        log({ event: "waitlist_unalerted_marker_failed" });
+      }
+    }
     const name: EventName =
       result === "sent"
         ? "waitlist_alert_sent"
@@ -367,7 +414,7 @@ export async function handleClientEvent(req: Request, deps: WaitlistDeps = {}): 
   if (!read.ok) return json(read.reason === "large" ? 413 : 400, { ok: false });
   const raw = read.text;
 
-  const decision = allow(clientIp(req), nowFn());
+  const decision = allow(limiterKey(req), nowFn());
   if (!decision.ok) {
     log({ event: "waitlist_rate_limited" });
     return json(429, { ok: false });

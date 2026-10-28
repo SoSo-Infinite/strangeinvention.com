@@ -9,6 +9,7 @@ export const EVENT_NAMES = [
   "waitlist_too_fast",
   "waitlist_rate_limited",
   "waitlist_stored",
+  "waitlist_duplicate",
   "waitlist_store_failed",
   "waitlist_alert_sent",
   "waitlist_alert_skipped",
