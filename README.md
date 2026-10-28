@@ -9,8 +9,22 @@ See [CONCEPT.md](./CONCEPT.md) for the unified idea (warehouse + edu-tainment + 
 ## Stack
 
 - Next.js App Router (TypeScript)
-- Waitlist via Route Handler → [FormSubmit](https://formsubmit.co) → `cjames112@gmail.com`
+- Waitlist via Route Handler → Vercel Blob (`signups/`) and an optional alert webhook
+- Step log with event names only (`events/`)
 - Palette: deep ink + electric mint (inventor lab)
+
+## Environment
+
+Names only. Do not commit values.
+
+- `BLOB_READ_WRITE_TOKEN` or `BLOB_STORE_ID` (OIDC). The form does not claim a signup was saved unless one of these is set and the private write succeeds. One object per email, under `signups/`. The object contains the email address.
+- `WAITLIST_TICKET_SECRET`. Signs the fill-time ticket and the signup path. Set it before the first signup and do not rotate it: the path is an HMAC of the email, so a later change stores a second object and can alert again. When it is unset, the fill-time check is skipped. Blob credentials are not used for this.
+- `ALERT_WEBHOOK_URL` (optional HTTPS). Each new signup POSTs `{ source, summary }`. The summary includes the email. A failed call is retried once; if it still fails, a private `unalerted/` marker is stored. A repeat of the same email does not alert again.
+- `ALERT_WEBHOOK_KEY` (optional). Sent as `Authorization: Bearer` when set.
+
+If no webhook is set, a stored signup still succeeds. Alert calls are capped at 60 per hour on each instance; signups past that cap are still stored.
+
+Public contact address: hello@strangeinvention.com.
 
 ## Local
 

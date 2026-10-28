@@ -3,8 +3,8 @@ import type { NextConfig } from "next";
 const isDev = process.env.NODE_ENV === "development";
 
 // Browser origins are same-origin only: Next.js chunks, globals.css, local
-// icon.svg, inline SVG, and a same-origin POST to /api/waitlist. Fonts are a
-// system stack. FormSubmit is fetched on the server, so it is not a CSP origin.
+// icon.svg, inline SVG, and same-origin POSTs to /api/waitlist and /api/events.
+// Fonts are a system stack. Blob and the alert webhook are fetched on the server.
 const contentSecurityPolicy = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""}`,
