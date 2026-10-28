@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { type PutBlob } from "./blob";
 import { createRateLimiter, limiterKey } from "./rate-limit";
-import { holdExpired, SUBMIT_WAIT_MS, TICKET_HOLD_MS } from "./ticket-hold";
 import { uaClass } from "./ua";
 import { WAITLIST_COPY } from "./waitlist-copy";
 import {
+  FLOOD_LIMIT,
   handleClientEvent,
   handleTicket,
   handleWaitlist,
@@ -18,6 +18,7 @@ import {
   signupPath,
   type WaitlistDeps,
 } from "./waitlist";
+import { holdExpired, releaseHeldTicket, SUBMIT_WAIT_MS, TICKET_HOLD_MS } from "./ticket-hold";
 
 const NOW = 1_700_000_000_000;
 const EMAIL = "Ada@Example.com";
@@ -61,6 +62,7 @@ function harness(overrides: WaitlistDeps = {}) {
     now: () => NOW,
     random: () => "abcd1234abcd1234",
     allow: () => ({ ok: true, justLimited: false }),
+    allowFlood: () => ({ ok: true, justLimited: false }),
     allowEvent: () => ({ ok: true, justLimited: false }),
     log: (entry) => logs.push(entry),
     putBlob,
@@ -264,15 +266,16 @@ test("uses OIDC store id without a read-write token", async () => {
 });
 
 test("rejects a filled honeypot without storing the signup", async () => {
-  const { writes, deps } = harness();
+  const { writes, logs, deps } = harness();
   const res = await handleWaitlist(request(signupBody({ company: "Acme" })), deps);
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.equal(body.ok, false);
   assert.equal(body.error, WAITLIST_COPY.wait);
   assert.equal(signups(writes).length, 0);
-  assert.equal(events(writes).some((write) => write.pathname.includes("waitlist_spam")), true);
-  assertNoPersonal(events(writes).map((write) => write.body));
+  assert.equal(writes.length, 0);
+  assert.equal(logs.some((entry) => entry.event === "waitlist_spam"), true);
+  assertNoPersonal([JSON.stringify(logs)]);
 });
 
 test("rejects a ticket that is too new, missing, forged, or old", async () => {
@@ -319,14 +322,15 @@ test("accepts a server ticket after the minimum fill time", async () => {
 });
 
 test("rejects an invalid email and does not echo it", async () => {
-  const { writes, deps } = harness();
+  const { writes, logs, deps } = harness();
   const res = await handleWaitlist(request(signupBody({ email: "not-an-email" })), deps);
   assert.equal(res.status, 400);
   const body = await res.json();
   assert.equal(body.error, WAITLIST_COPY.invalid);
   assert.equal(JSON.stringify(body).includes("not-an-email"), false);
   assert.equal(signups(writes).length, 0);
-  assert.equal(events(writes).some((write) => write.pathname.includes("waitlist_invalid")), true);
+  assert.equal(writes.length, 0);
+  assert.equal(logs.some((entry) => entry.event === "waitlist_invalid"), true);
 });
 
 test("rate limit writes one event and then stops writing", async () => {
@@ -339,7 +343,8 @@ test("rate limit writes one event and then stops writing", async () => {
   const res = await handleWaitlist(request(signupBody()), first.deps);
   assert.equal(res.status, 429);
   assert.equal((await res.json()).error, WAITLIST_COPY.rate);
-  assert.equal(events(first.writes).length, 1);
+  assert.equal(first.writes.length, 0);
+  assert.equal(first.logs.some((entry) => entry.event === "waitlist_rate_limited"), true);
 
   const second = harness({ allow });
   const res2 = await handleWaitlist(request(signupBody()), second.deps);
@@ -630,6 +635,61 @@ test("please-wait responses do not fill the signup rate limit", async () => {
   const ok = await handleWaitlist(request(signupBody()), deps);
   assert.equal(ok.status, 200);
   assert.equal(counted, 1);
+});
+
+test("fifty bad posts from one IP write no blob objects", async () => {
+  const flood = createRateLimiter(FLOOD_LIMIT, 60 * 60 * 1000);
+  const { writes, logs, deps } = harness({
+    allowFlood: (key, now) => flood.allow(key, now),
+  });
+  let limited = 0;
+  for (let i = 0; i < 50; i += 1) {
+    const res = await handleWaitlist(request(null, {}, "not-json"), deps);
+    if (res.status === 429) limited += 1;
+    else assert.equal(res.status, 400);
+  }
+  assert.equal(limited, 50 - FLOOD_LIMIT);
+  assert.equal(writes.length, 0);
+  assert.equal(logs.some((entry) => entry.event === "waitlist_invalid"), true);
+  assert.equal(logs.some((entry) => entry.event === "waitlist_rate_limited"), true);
+  assert.equal(JSON.stringify(logs).includes(IP), false);
+
+  const other = harness({
+    allowFlood: (key, now) => flood.allow(key, now),
+  });
+  const again = await handleWaitlist(
+    request(null, { "x-forwarded-for": "198.51.100.8" }, "not-json"),
+    other.deps,
+  );
+  assert.equal(again.status, 400);
+  assert.equal(other.writes.length, 0);
+});
+
+test("a please-wait for an old ticket is dropped", () => {
+  assert.equal(releaseHeldTicket(false, true), true);
+  assert.equal(releaseHeldTicket(true, true), false);
+  assert.equal(releaseHeldTicket(false, false), false);
+});
+
+test("an unset ticket secret omits the email hash from the unalerted marker", async () => {
+  const { writes, deps } = harness({
+    env: {
+      WAITLIST_TICKET_SECRET: "",
+      BLOB_READ_WRITE_TOKEN: "blob-token",
+      ALERT_WEBHOOK_URL: "https://alerts.example/hook",
+      ALERT_WEBHOOK_KEY: KEY,
+    },
+    fetchImpl: async () => new Response("no", { status: 500 }),
+  });
+  const res = await handleWaitlist(request({ email: EMAIL, company: "" }), deps);
+  assert.equal(res.status, 200);
+  const marker = writes.find((write) => write.pathname.startsWith("unalerted/"));
+  assert.equal(marker?.pathname, "unalerted/abcd1234abcd1234.json");
+  const marked = JSON.parse(marker?.body ?? "{}") as { path?: string; reason?: string };
+  assert.equal(marked.path, undefined);
+  assert.equal(marked.reason, "failed");
+  assert.equal(marker?.body.includes(STORED_EMAIL), false);
+  assert.notEqual(marker?.pathname, signupPath(STORED_EMAIL).replace("signups/", "unalerted/"));
 });
 
 test("retries one failed alert and then marks the signup unalerted", async () => {

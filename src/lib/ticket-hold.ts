@@ -16,3 +16,8 @@ export function holdExpired(held: HeldTicket | null, now: number): boolean {
   if (age < 0) return false;
   return age > TICKET_HOLD_MS;
 }
+
+/** A "please wait" for a ticket we did not just fetch should be dropped so the next submit asks again. */
+export function releaseHeldTicket(fetchedAtSubmit: boolean, pleaseWait: boolean): boolean {
+  return pleaseWait && !fetchedAtSubmit;
+}

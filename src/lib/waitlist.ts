@@ -2,6 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { WAITLIST_COPY } from "./waitlist-copy";
 import {
   blobConfigured,
+  safeId,
   writeBlob,
   type Env,
   type PutBlob,
@@ -16,6 +17,9 @@ const TICKET_FUTURE_MS = 60_000;
 const TICKET_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SIGNUP_LIMIT = 8;
 const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
+/** Stops a burst of rejected posts before they are parsed. Separate from the signup limit. */
+export const FLOOD_LIMIT = 30;
+const FLOOD_WINDOW_MS = 60 * 60 * 1000;
 const EVENT_LIMIT = 30;
 export const ALERT_CAP = 60;
 const ALERT_WINDOW_MS = 60 * 60 * 1000;
@@ -24,6 +28,7 @@ const ALERT_TIMEOUT_MS = 8000;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const signupLimiter = createRateLimiter(SIGNUP_LIMIT, SIGNUP_WINDOW_MS);
+const floodLimiter = createRateLimiter(FLOOD_LIMIT, FLOOD_WINDOW_MS);
 const eventLimiter = createRateLimiter(EVENT_LIMIT, SIGNUP_WINDOW_MS);
 const alertLimiter = createRateLimiter(ALERT_CAP, ALERT_WINDOW_MS);
 
@@ -34,6 +39,8 @@ export type WaitlistDeps = {
   random?: () => string;
   putBlob?: PutBlob;
   allow?: (key: string, now: number) => LimitDecision;
+  /** Generous cap before the body is parsed. Over the cap: 429 and a log line, no Blob write. */
+  allowFlood?: (key: string, now: number) => LimitDecision;
   allowEvent?: (key: string, now: number) => LimitDecision;
   allowAlert?: (key: string, now: number) => LimitDecision;
   log?: LogFn;
@@ -281,6 +288,7 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   const nowFn = deps.now ?? Date.now;
   const log = deps.log ?? ((entry) => console.log(JSON.stringify(entry)));
   const allow = deps.allow ?? ((key, now) => signupLimiter.allow(key, now));
+  const allowFlood = deps.allowFlood ?? ((key, at) => floodLimiter.allow(key, at));
   const fetchImpl = deps.fetchImpl ?? fetch;
   const ctx = ctxFrom(deps, env, log, nowFn);
   const now = nowFn();
@@ -288,6 +296,11 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
   if (!sameOrigin(req)) {
     log({ event: "waitlist_origin_rejected" });
     return json(403, { ok: false, error: WAITLIST_COPY.origin });
+  }
+
+  if (!allowFlood(limiterKey(req), now).ok) {
+    log({ event: "waitlist_rate_limited" });
+    return json(429, { ok: false, error: WAITLIST_COPY.rate });
   }
 
   const contentType = (req.headers.get("content-type") || "").toLowerCase();
@@ -314,33 +327,32 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     }
     body = parsed as Record<string, unknown>;
   } catch {
-    await finish(recordEvent("waitlist_invalid", req, ctx), deps, log);
+    log({ event: "waitlist_invalid" });
     return json(400, { ok: false, error: WAITLIST_COPY.badRequest });
   }
 
   if (honeypotFilled(body.company)) {
-    await finish(recordEvent("waitlist_spam", req, ctx), deps, log);
+    log({ event: "waitlist_spam" });
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
   }
 
   const secret = ticketSecret(env);
   // No ticket secret: do not block visitors, and do not sign with a blob credential.
-  // "Please wait" does not consume the rate limit, so a retry is not an hour lockout.
+  // "Please wait" does not consume the signup limit. The flood limit above still applies.
   if (secret && tooFast(ticketIssuedAt(body.ticket, secret), now)) {
-    await finish(recordEvent("waitlist_too_fast", req, ctx), deps, log);
+    log({ event: "waitlist_too_fast" });
     return json(400, { ok: false, error: WAITLIST_COPY.wait });
   }
 
   const decision = allow(limiterKey(req), now);
   if (!decision.ok) {
     log({ event: "waitlist_rate_limited" });
-    if (decision.justLimited) await finish(recordEvent("waitlist_rate_limited", req, ctx), deps, log);
     return json(429, { ok: false, error: WAITLIST_COPY.rate });
   }
 
   const email = normalizeEmail(body.email);
   if (!email) {
-    await finish(recordEvent("waitlist_invalid", req, ctx), deps, log);
+    log({ event: "waitlist_invalid" });
     return json(400, { ok: false, error: WAITLIST_COPY.invalid });
   }
 
@@ -375,13 +387,15 @@ export async function handleWaitlist(req: Request, deps: WaitlistDeps = {}): Pro
     const result = await deliverAlert(email, env, fetchImpl, allowAlert, now);
     if (result === "failed" || result === "capped") {
       try {
-        const marker = pathname.replace(/^signups\//, "unalerted/");
+        const marker = secret
+          ? pathname.replace(/^signups\//, "unalerted/")
+          : `unalerted/${safeId(deps.random)}.json`;
         await writeBlob(
           marker,
           JSON.stringify({
             at: new Date(now).toISOString(),
-            path: pathname,
             reason: result,
+            ...(secret ? { path: pathname } : {}),
           }),
           env,
           deps.putBlob,

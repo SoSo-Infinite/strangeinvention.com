@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { CONTACT_EMAIL, WAITLIST_COPY } from "@/lib/waitlist-copy";
-import { holdExpired, SUBMIT_WAIT_MS, type HeldTicket } from "@/lib/ticket-hold";
+import { holdExpired, releaseHeldTicket, SUBMIT_WAIT_MS, type HeldTicket } from "@/lib/ticket-hold";
 
 type Status = "idle" | "loading" | "ok" | "err";
 
@@ -94,6 +94,9 @@ export default function WaitlistForm() {
       };
 
       if (!res.ok || payload.ok !== true) {
+        if (releaseHeldTicket(fetchedAtSubmit, payload.error === WAITLIST_COPY.wait)) {
+          held.current = null;
+        }
         setStatus("err");
         setMessage(payload.error || WAITLIST_COPY.generic);
         return;
