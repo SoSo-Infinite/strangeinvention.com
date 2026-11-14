@@ -178,6 +178,11 @@ export default function Home() {
           <p className="fineprint">
             © {new Date().getFullYear()} Strange Invention.
           </p>
+          {process.env.VERCEL_ENV === "preview" ? (
+            <p className="fineprint">
+              <a href="/play">A private warehouse walk is open on this preview.</a>
+            </p>
+          ) : null}
         </div>
       </footer>
     </>
