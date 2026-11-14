@@ -1,0 +1,228 @@
+{
+  "tiers": [
+    {
+      "id": "desk",
+      "name": "Desk chachki",
+      "material": "matte print",
+      "priceCents": 2700,
+      "setSize": 2,
+      "fabricated": false
+    },
+    {
+      "id": "shelf",
+      "name": "Shelf chachki",
+      "material": "smooth resin",
+      "priceCents": 4400,
+      "setSize": 4,
+      "fabricated": true
+    },
+    {
+      "id": "showpiece",
+      "name": "Showpiece chachki",
+      "material": "resin with LED glow",
+      "priceCents": 8900,
+      "setSize": 6,
+      "fabricated": true
+    }
+  ],
+  "items": [
+    {
+      "id": "saluting-device",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Saluting Device",
+      "patent": "US 556,248",
+      "inventor": "James C. Boyle",
+      "year": 1896,
+      "blurb": "A hat that tips itself when a person bows. U.S. patent 556,248, James C. Boyle, 1896.",
+      "docLine": "Doc bows at the brim and the hat answers. He calls that manners with gears.",
+      "oogerLine": "Ooger mutters, \"hooo-mans cannot even lift their own hats.\""
+    },
+    {
+      "id": "plow-gun",
+      "type": "exhibit",
+      "sale": "lore",
+      "badge": "REAL",
+      "name": "Combined Plow and Gun",
+      "patent": "US 35,600",
+      "inventor": "C. M. French and W. H. Fancher",
+      "year": 1862,
+      "blurb": "A plow with a gun barrel built into the beam. U.S. patent 35,600, C. M. French and W. H. Fancher, 1862. It stays on the shelf as a story, not a product.",
+      "docLine": "Doc will talk about the beam all day. He will not sell the plow.",
+      "oogerLine": "Ooger pats the share. \"hooo-mans mixed a field tool with a weapon. The shelf can keep it.\""
+    },
+    {
+      "id": "storm-mask",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Storm-Mask",
+      "patent": "US 587,687",
+      "inventor": "Ulrich Harder",
+      "year": 1897,
+      "replicaNote": "Display replica, not wearable.",
+      "blurb": "A wedge-nosed papier-mache storm mask. U.S. patent 587,687, Ulrich Harder, 1897. The shelf copy is a display replica, not something to wear.",
+      "docLine": "Doc likes the nose. He says it parts the wind like a rude little boat.",
+      "oogerLine": "Ooger squints. \"hooo-mans hid from weather inside paper. Bold.\""
+    },
+    {
+      "id": "quantum-lighter",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "FICTIONAL",
+      "name": "Quantum Lighter",
+      "blurb": "A made-up lighter that is said to light one candle in three timelines at once. The case is sealed. There is no flame.",
+      "docLine": "Doc taps the seal. One flame, three stories. He will not say which story is this one.",
+      "oogerLine": "Ooger shrugs. \"hooo-mans wanted a lighter that argues with itself.\""
+    },
+    {
+      "id": "mustache-guard",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Mustache-Guard",
+      "patent": "US 411,988",
+      "inventor": "May Evans Harrington",
+      "year": 1889,
+      "blurb": "A small guard clipped to a spoon so soup misses a mustache. U.S. patent 411,988, May Evans Harrington, 1889.",
+      "docLine": "Doc calls it a polite fence for soup.",
+      "oogerLine": "Ooger grins with one tooth. \"hooo-mans built a gate for a mustache.\""
+    },
+    {
+      "id": "dimple-maker",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Dimple Maker",
+      "patent": "US 560,351",
+      "inventor": "Martin Goetze",
+      "year": 1896,
+      "blurb": "A hand-cranked pair of arms meant to press a dimple into a cheek. U.S. patent 560,351, Martin Goetze, 1896. The shelf copy is for looking, not for cranking on anyone.",
+      "docLine": "Doc will not demonstrate it on a visitor. He says the drawing is enough.",
+      "oogerLine": "Ooger covers a cheek. \"hooo-mans tried to crank a smile. That tracks.\""
+    },
+    {
+      "id": "chicken-eye-protector",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Eye-Protector for Chickens",
+      "patent": "US 730,918",
+      "inventor": "Andrew Jackson Jr.",
+      "year": 1903,
+      "blurb": "Tiny frames so a hen's neighbors cannot peck her eyes. U.S. patent 730,918, Andrew Jackson Jr., 1903.",
+      "docLine": "Doc holds them up like small goggles and nods at hens who are not here.",
+      "oogerLine": "Ooger blinks his big eyes. \"Even birds needed a shield from the other birds.\""
+    },
+    {
+      "id": "rocking-bath",
+      "type": "exhibit",
+      "sale": "chachki",
+      "badge": "REAL",
+      "name": "Rocking Bath-Tub",
+      "patent": "US 643,094",
+      "inventor": "Otto A. Hensel",
+      "year": 1900,
+      "blurb": "A tub on rockers that was meant to slosh water at the person inside. U.S. patent 643,094, Otto A. Hensel, 1900. The shelf copy does not slosh, and it is not a treatment. Doc is not a doctor.",
+      "docLine": "Doc rocks an empty model and looks pleased. He is not a doctor, and this is not a treatment.",
+      "oogerLine": "Ooger steps back. \"hooo-mans put a boat in the washroom.\""
+    },
+    {
+      "id": "plasma-globe",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Desk Plasma Globe",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=plasma+globe+lamp",
+      "blurb": "A glass ball of slow lightning for a desk. The warehouse does not make this one.",
+      "docLine": "Doc stares into the glow and forgets the sentence he started.",
+      "oogerLine": "Ooger taps the glass. \"Pretty. Also not ours, hooo-mans.\""
+    },
+    {
+      "id": "newtons-cradle",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Newton's Cradle",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=newton%27s+cradle",
+      "blurb": "A row of metal balls that knock the next idea down the line. Sold by another shop.",
+      "docLine": "Doc says the end ball knows what the first ball meant.",
+      "oogerLine": "Ooger watches one click. \"hooo-mans invented a polite argument.\""
+    },
+    {
+      "id": "rube-goldberg-kit",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Rube Goldberg Kit",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=rube+goldberg+kit",
+      "blurb": "A box of ramps, tracks, and little mishaps that end in one small result. Another shop sells it.",
+      "docLine": "Doc wants twelve extra steps between the lever and the bell.",
+      "oogerLine": "Ooger sighs. \"hooo-mans never take the short hallway.\""
+    },
+    {
+      "id": "jacobs-ladder",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Jacob's Ladder Toy",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=jacob%27s+ladder+toy",
+      "blurb": "Wooden blocks on ribbons that flip down as if they are walking. Another shop sells it.",
+      "docLine": "Doc flips it once and calls the fall a staircase with commitment issues.",
+      "oogerLine": "Ooger lets it clack. \"It walks better than some hooo-mans.\""
+    },
+    {
+      "id": "telegraph-key",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Vintage Telegraph Key",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=vintage+telegraph+key",
+      "blurb": "A brass clicker from the age of dots and dashes. Another shop sells the old hardware.",
+      "docLine": "Doc taps a hello he will not translate.",
+      "oogerLine": "Ooger covers an ear. \"hooo-mans used to shout with one finger.\""
+    },
+    {
+      "id": "brass-kaleidoscope",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Brass Kaleidoscope",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=brass+kaleidoscope",
+      "blurb": "A tube of mirrors that turns scraps into a fake stained-glass window. Another shop sells it.",
+      "docLine": "Doc looks in, hums, and says the warehouse is the same trick at a larger size.",
+      "oogerLine": "Ooger squints through it. \"hooo-mans will stare at trash if it spins.\""
+    },
+    {
+      "id": "stirling-engine",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Model Stirling Engine",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=stirling+engine+model",
+      "blurb": "A little heat engine that spins when one side is warm and the other is not. Another shop sells the model.",
+      "docLine": "Doc warms one palm near it and calls that a complete power plant.",
+      "oogerLine": "Ooger nods. \"It runs on a cup of tea. Ambitious for a desk model, hooo-mans.\""
+    },
+    {
+      "id": "magic-lantern",
+      "type": "affiliate",
+      "source": "ebay",
+      "starterPick": true,
+      "badge": "BUYABLE",
+      "name": "Magic Lantern",
+      "ebayUrl": "https://www.ebay.com/sch/i.html?_nkw=magic+lantern+projector",
+      "blurb": "An old picture projector that throws a painted slide on the wall. Another shop sells the lantern.",
+      "docLine": "Doc treats every slide like a classified experiment.",
+      "oogerLine": "Ooger shrugs. \"hooo-mans have always wanted a bigger ghost on the wall.\""
+    }
+  ]
+}
